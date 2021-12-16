@@ -1,0 +1,221 @@
+---
+title: "Prediction Model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset). Our goal for this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+
+Below is the code I used when creating the model, estimating the out-of-sample error, and making predictions. 
+
+## Data
+The training data for this project are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>
+
+
+
+## Data cleaning
+
+Load all the packages that will be used for the analysis and load data. 
+
+```{r echo=TRUE}
+library(caret)
+library(ggplot2)
+library(reshape2)
+
+set.seed(4554)
+
+# data urls
+urlTraining <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+urlValidation <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# load data
+dataset <- read.csv(urlTraining, header = T, na.strings = c("", "NA"))
+validation <- read.csv(urlValidation, header = T, na.strings = c("", "NA"))
+
+```
+
+Explore data: 
+```{r echo=TRUE}
+# dataset dimension
+dim(dataset)
+
+# NA columns
+NA_cols = apply(dataset, 2, function(x) sum(is.na(x))); NA_cols = NA_cols[NA_cols > 0]
+```
+
+The dataset contains 19622 observations of 160 variables. By looking at the number of NAs per columns, we observe that 100 columns have observations that are almost always NAs. The names of these variables indicate that in fact these variables are summary data. We will remove these variables from the analysis. We will also remove the metadata (columns 1 to 7) which are irrelevant to the outcome. 
+
+```{r echo=TRUE}
+
+# remove mostly na columns (summary variables)
+filteredData <- dataset[,-which(colnames(dataset) %in% names(NA_cols))]
+
+# remove metadata which is irrelevant to the outcome
+filteredData <- filteredData[,-c(1:7)] 
+
+dim(filteredData)
+
+```
+We are left with 53 accelerometer variables which we will try to further reduce before developing the prediction model. But first, we will split the dataset into a training and testing set. 
+
+## Cross validation
+```{r echo = TRUE}
+# create training and testing partition
+inTrain <- createDataPartition(y = filteredData$classe, p = 0.7, list = F)
+
+# training dataset
+training <- filteredData[inTrain, ]
+
+# testing dataset
+testing <- filteredData[-inTrain, ]
+```
+
+## Correlation between predictors
+We will evaluate the correlation between the potential predictors to try and reduce the number of variables to use in the model.
+```{r echo = TRUE}
+# pairwise correlation matrix of all variables
+cor_matrix <- cor(training[sapply(training, is.numeric)])
+
+# transform correlation matrix for plotting
+melted_cor_matrix <- melt(cor_matrix)
+
+# plot correlation matrix
+ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) + 
+      geom_tile() + 
+      labs(fill = 'corr coeff')+
+      theme(axis.title = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+      scale_fill_gradient2(low = 'darkred', high = 'darkblue', mid = 'white' )
+
+```
+
+Based on the pairwise correlations, some variables appear to be highly correlated (coefficient > 0.9). We will keep only one of them for the prediction.  
+
+```{r echo = TRUE}
+# find highly correlated variables
+cor_var <- findCorrelation(cor_matrix, cutoff = .90)
+
+# remove one of the highly correlated variables in pairs
+training <- training[, -cor_var]
+
+# resulting training dataset dimension
+dim(training)
+
+```
+After reduction of the number of predictors, we have 46 potential predictors that we will train our models on. 
+
+## Model developement
+We will develop three different models (Random forest, Gradient Boosting Machine and Linear Discriminant Analysis) and compare their performance before deciding which one works best. 
+
+For all models, we instruct the “train” function to use 3-fold cross-validation to select optimal tuning parameters for the model.
+
+### Random Forest (RF)
+First, we fit a RF model on `training`.
+```{r echo = TRUE}
+# instruct train to use 3-fold cross-validation to select optimal tuning parameters
+fitControl <- trainControl(method="cv", number=3, verboseIter=F)
+
+# fit random forest model on training
+modRF = train(classe~., data = training, method = 'rf', trControl = fitControl,
+              tuneLength = 5)
+```
+
+### Gradient Boosting Machine (GBM)
+Now, we fit a GBM model on `training`.
+```{r echo = TRUE}
+modGBM = train(classe~., data = training, method = 'gbm', trControl = fitControl,
+               tuneLength = 5, verbose = F)
+```
+
+### Linear Discriminant Analysis (LDA)
+Finally, we fit a LDA model on `training`.
+```{r echo = TRUE}
+modLDA = train(classe~., data = training, method = 'lda', trControl = fitControl)
+```
+
+## Model testing and selection
+We use the 3 fitted models to predict the label (“classe”) in `testing`, and show the confusion matrix to compare the predicted versus the actual labels and select the model with best performance. 
+
+### RF
+```{r echo = TRUE}
+
+# use RF fitted model on testing to predict 'classe'
+predRF = predict(modRF, testing)
+
+# show confusion matrix to get accuracy
+RFconfMatrix = confusionMatrix(predRF, as.factor(testing$classe))
+RFconfMatrix
+```
+
+The RF model gives an accuracy of 0.996 %, thus the predicted out-of-sample error is of 0.004%.
+
+### GBM
+```{r echo = TRUE}
+
+# use GBM fitted model on testing to predict 'classe'
+predGBM = predict(modGBM, testing)
+
+# show confusion matrix to get accuracy
+GBMconfMatrix = confusionMatrix(predGBM, as.factor(testing$classe))
+GBMconfMatrix
+```
+
+The GBM model gives an accuracy of 0.989%, thus the predicted out-of-sample error is of 0.011%.
+
+### LDA
+```{r echo = TRUE}
+
+# use LDA fitted model on testing to predict 'classe'
+predLDA = predict(modLDA, testing)
+
+# show confusion matrix to get accuracy
+LDAconfMatrix = confusionMatrix(predLDA, as.factor(testing$classe))
+LDAconfMatrix
+```
+The GLDA model gives an accuracy of 0.678%, thus the predicted out-of-sample error is of 0.322%.
+
+### Models Comparison
+The table below compares the accury and predicted out-of-sample error in all 3 models.
+```{r echo = TRUE}
+# create dataframe of models accuracy
+models = data.frame(model=c('RF', 'GBM', 'LDA'), accuracy=c(RFconfMatrix$overall[1],
+                                                            GBMconfMatrix$overall[1],
+                                                            LDAconfMatrix$overall[1]))
+# round accuracy to 3 digits
+models$accuracy = round(models$accuracy, 3)
+
+# compuate oos error
+models$oos_error = 1-models$accuracy
+
+models
+```
+The comparison of the 3 models shows that the one with best accuracy (0.996%) and lower out-of-sample error (0.004) is the Random Forest.
+
+We will now apply this model on the validation data to predict the 'classe' in 20 test cases. 
+
+## Predictions in Validation cases
+We will use the RF model fitted on `training` to predict the label 'classe' for the cases in `validation` dataset.
+
+```{r echo = TRUE}
+# apply model on validation
+pred = predict(modRF, validation)
+
+# create dataframe with prediction for each case
+pred = data.frame(case = c(1:length(pred)), pred = pred)
+
+print(pred)
+```
+
